@@ -13,7 +13,7 @@ exports.opdRegistrationPayment = async (req, res, next) => {
 
         emailorPhoneNumber += ''
         //  merchantId   : 'y5ABgiIXkP1l7c',
-        // merchantKey :'5f61490f-9252-46d1-9a12-962e19f74f08'
+        // merchantKey :'10730c15-1e9c-401a-b1e9-2c49d7e4109d'
         let isMobile = validator.isMobilePhone(emailorPhoneNumber, 'en-IN')
         let isEmail = validator.isEmail(emailorPhoneNumber)
         if(!isMobile && !isEmail)
@@ -37,9 +37,10 @@ exports.opdRegistrationPayment = async (req, res, next) => {
         }
 
         const checksum = createHash('sha256')
-            .update(JSON.stringify(paymentGatewayPayload) + '5f61490f-9252-46d1-9a12-962e19f74f08').digest('hex');
+            .update(JSON.stringify(paymentGatewayPayload) + '10730c15-1e9c-401a-b1e9-2c49d7e4109d').digest('hex');
 
         paymentGatewayPayload.checksum = checksum
+
 
         let paymentLink = {
             checksum: checksum,
@@ -52,14 +53,14 @@ exports.opdRegistrationPayment = async (req, res, next) => {
         /**Axios return in .data property */
          let checkSumResponse = await axios({
             method: 'post',
-            url: 'https://checkout-sandbox.freecharge.in/api/v1/co/payment_link/create',
+            url: 'https://checkout.freecharge.in/api/v1/co/payment_link/create',
             data: paymentLink
           })
           
         // Generated Link
         const linkGenerated = checkSumResponse?.data?.shortenLinkUrl
         const fcLinkId = checkSumResponse?.data?.fcLinkId
-
+        
 
         if(!linkGenerated || !fcLinkId)
         {
@@ -67,7 +68,7 @@ exports.opdRegistrationPayment = async (req, res, next) => {
                 {
                     error : true,
                     status : 200,
-                    message : 'Link could not be genarted, please try again later.'
+                    message : 'Link could not be generated, please try again later.'
                 }
             )
         }
@@ -83,13 +84,13 @@ exports.opdRegistrationPayment = async (req, res, next) => {
         ]
         }
 
-        const checksumSMS = createHash('sha256').update(JSON.stringify(link) + '5f61490f-9252-46d1-9a12-962e19f74f08').digest('hex');
+        const checksumSMS = createHash('sha256').update(JSON.stringify(link) +  '10730c15-1e9c-401a-b1e9-2c49d7e4109d').digest('hex');
         link.checksum =  checksumSMS;
         
        
         let verification = await axios({
             method: 'post',
-            url: 'https://checkout-sandbox.freecharge.in/api/v1/co/payment_link/share',
+            url: 'https://checkout.freecharge.in/api/v1/co/payment_link/share',
             data: link
             })
         
@@ -114,17 +115,21 @@ exports.opdRegistrationPayment = async (req, res, next) => {
             {transaction}
         )
 
+        const QRCodeGenerator = await import('qrcode');
+        const QRCodeImage = await QRCodeGenerator.toDataURL(linkGenerated);
+
         await transaction.commit()
         return await res.send({
             error: false,
             status: 200,
-            message: "new check sum value is generated",
+            message: "Check your inbox/spam for the link ",
             result: verification.data,
-            qrCodeUrl : linkGenerated,
+            qrCodeUrl : QRCodeImage,
             fcLinkId : fcLinkId
         })
     }
     catch (error) {
+        console.log(error)
         await transaction.rollback()
          next(error)
     }
@@ -155,7 +160,7 @@ exports.verifyPayment = async (req, res, next) => {
         }
         
 
-        const checksum = createHash('sha256').update(JSON.stringify(paymentDone) + '5f61490f-9252-46d1-9a12-962e19f74f08').digest('hex');
+        const checksum = createHash('sha256').update(JSON.stringify(paymentDone) + '10730c15-1e9c-401a-b1e9-2c49d7e4109d').digest('hex');
         paymentDone.checksum = checksum;
         
         let SuccessMessage = {
@@ -164,10 +169,8 @@ exports.verifyPayment = async (req, res, next) => {
             checksum: checksum,
 
         }
-        const verification = await axios.post('https://checkout-sandbox.freecharge.in/api/v1/co/payment_link/transactions', SuccessMessage);
-        console.log(1)
+        const verification = await axios.post('https://checkout.freecharge.in/api/v1/co/payment_link/transactions', SuccessMessage);
         const paymentResponse = verification?.data
-        
         if(!paymentResponse)
         {
 
@@ -197,7 +200,6 @@ exports.verifyPayment = async (req, res, next) => {
                 let status = "FAILED"
                 for(let i = 0 ; i < page.length; i++)
                 {
-                    console.log(page[i]?.status)
                     if(page?.[i]?.status === "SUCCESS")
                     {
                         status = "SUCCESS"
@@ -209,7 +211,8 @@ exports.verifyPayment = async (req, res, next) => {
                         {
                             error : false,
                             status : 200,
-                            message : 'Successfully verified payment'
+                            message : 'Payment Success',
+                            success : true 
                         }
                     )
                 }
@@ -227,51 +230,8 @@ exports.verifyPayment = async (req, res, next) => {
         }
 
 
-        return res.send({
-            error: false,
-            status: 200,
-            message: "new check sum value is generated",
-            result: paymentDone
-        })
-
     } catch (error) {
         return res.send(error)
     }
 }
 
-///***Share Link API  ****/
-exports.shareLink = async (req, res, next) => {
-    try {
-        const { merchantId, fcLinkId,shareData} = req.body
-
-        let link = {
-            fcLinkId: fcLinkId,
-            merchantId: 'y5ABgiIXkP1l7c',
-            shareData:[{id:"8126345892",
-        type:"MOBILE"}]
-        }
-
-        const checksum = createHash('sha256').update(JSON.stringify(link) + '5f61490f-9252-46d1-9a12-962e19f74f08').digest('hex');
-        link.checksum = checksum;
-        
-        let linkSend = {
-            fcLinkId: fcLinkId,
-            merchantId: 'y5ABgiIXkP1l7c',
-            shareData:[{id:"8126345892",
-            type:"MOBILE"}],
-            checksum: checksum,
-
-        }
-       const verification = await axios.post('https://checkout-sandbox.freecharge.in/api/v1/co/payment_link/share', linkSend);
-
-        return res.send({
-            error: false,
-            status: 200,
-            message: "new check sum value is generated",
-            result: link
-        })
-
-    } catch (error) {
-        return res.send(error)
-    }
-}
