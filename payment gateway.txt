@@ -4,6 +4,26 @@ const { array } = require('joi');
 const validator = require('validator');
 const { sequelizeTransaction } = require('../services/sequelizeTransaction.service');
 const model = require('./../models/index')
+const sendErrorMessageAndLogIt = require('../utils/errorMessagePrintingAndLogging')
+const { FREECHARGE_URL, FREECHARGE_TOKEN, FREECHARGE_MERCHANT_ID } = process.env;
+const { PINELAB_CONFIG, PINELAB_URL } = process.env;
+const { initiatePaymentSchema, statusOfPaymentSchema, cancelPaymentSchema, voidPaymentSchema } = require('../validations/paymentGateway.validation')
+
+
+const { MerchantStorePosCode, IMEI, SecurityToken, AutoCancelDurationInMinutes, MerchantID } = PINELAB_CONFIG ? JSON.parse(PINELAB_CONFIG) : "";
+
+const plutusPaymentInstance = axios.create({
+    baseURL: PINELAB_URL,
+});
+
+// plutusPaymentInstance.interceptors.response.use(function(res, req){
+//     console.log("res START")
+//     console.log(res?.data)
+//     console.log("res END")
+//     // console.log("req >>><<<")
+//     // console.log(req)
+//     return res
+// });
 
 
 exports.opdRegistrationPayment = async (req, res, next) => {
@@ -31,13 +51,13 @@ exports.opdRegistrationPayment = async (req, res, next) => {
         let paymentGatewayPayload = {
             fixedTxnAmount: parseFloat(fixedTxnAmount || ""),
             maximumTxnAmount: parseFloat(fixedTxnAmount || ""),
-            merchantId: 'y5ABgiIXkP1l7c',
+            merchantId: FREECHARGE_MERCHANT_ID,
             productType: 'PAYMENTLINK',
             transactionOpenForAll: true,
         }
 
         const checksum = createHash('sha256')
-            .update(JSON.stringify(paymentGatewayPayload) + '10730c15-1e9c-401a-b1e9-2c49d7e4109d').digest('hex');
+            .update(JSON.stringify(paymentGatewayPayload) + FREECHARGE_TOKEN).digest('hex');
 
         paymentGatewayPayload.checksum = checksum
 
@@ -46,14 +66,14 @@ exports.opdRegistrationPayment = async (req, res, next) => {
             checksum: checksum,
             fixedTxnAmount: parseFloat(fixedTxnAmount || ""),
             maximumTxnAmount: parseFloat(fixedTxnAmount || ""),
-            merchantId: 'y5ABgiIXkP1l7c',
+            merchantId: FREECHARGE_MERCHANT_ID,
             productType: 'PAYMENTLINK',
             transactionOpenForAll: true,
         }
         /**Axios return in .data property */
          let checkSumResponse = await axios({
             method: 'post',
-            url: 'https://checkout.freecharge.in/api/v1/co/payment_link/create',
+            url: FREECHARGE_URL + '/api/v1/co/payment_link/create',
             data: paymentLink
           })
           
@@ -75,7 +95,7 @@ exports.opdRegistrationPayment = async (req, res, next) => {
 
         let link = {
             fcLinkId: fcLinkId,
-            merchantId: 'y5ABgiIXkP1l7c',
+            merchantId: FREECHARGE_MERCHANT_ID,
             shareData:[
                 {
                 id:emailorPhoneNumber,
@@ -84,13 +104,13 @@ exports.opdRegistrationPayment = async (req, res, next) => {
         ]
         }
 
-        const checksumSMS = createHash('sha256').update(JSON.stringify(link) +  '10730c15-1e9c-401a-b1e9-2c49d7e4109d').digest('hex');
+        const checksumSMS = createHash('sha256').update(JSON.stringify(link) +  FREECHARGE_TOKEN).digest('hex');
         link.checksum =  checksumSMS;
         
        
         let verification = await axios({
             method: 'post',
-            url: 'https://checkout.freecharge.in/api/v1/co/payment_link/share',
+            url: FREECHARGE_URL + '/api/v1/co/payment_link/share',
             data: link
             })
         
@@ -136,7 +156,7 @@ exports.opdRegistrationPayment = async (req, res, next) => {
     finally
     {
         if (res.headersSent == false) {
-            res.status(400).send(
+            res.status(200).send(
                {
                    error: true,
                    status: 200,
@@ -156,20 +176,20 @@ exports.verifyPayment = async (req, res, next) => {
 
         let paymentDone = {
             fcLinkId: fcLinkId,
-            merchantId: 'y5ABgiIXkP1l7c',
+            merchantId: FREECHARGE_MERCHANT_ID,
         }
         
 
-        const checksum = createHash('sha256').update(JSON.stringify(paymentDone) + '10730c15-1e9c-401a-b1e9-2c49d7e4109d').digest('hex');
+        const checksum = createHash('sha256').update(JSON.stringify(paymentDone) + FREECHARGE_TOKEN).digest('hex');
         paymentDone.checksum = checksum;
         
         let SuccessMessage = {
             fcLinkId: fcLinkId,
-            merchantId: 'y5ABgiIXkP1l7c',
+            merchantId: FREECHARGE_MERCHANT_ID,
             checksum: checksum,
 
         }
-        const verification = await axios.post('https://checkout.freecharge.in/api/v1/co/payment_link/transactions', SuccessMessage);
+        const verification = await axios.post(FREECHARGE_URL + '/api/v1/co/payment_link/transactions', SuccessMessage);
         const paymentResponse = verification?.data
         if(!paymentResponse)
         {
@@ -235,3 +255,311 @@ exports.verifyPayment = async (req, res, next) => {
     }
 }
 
+
+// PINE LABS
+exports.initiatePayment = async( req, res, next) => {
+  try{
+    let { amount, userId, paymentMobileNumber } = await initiatePaymentSchema.validateAsync(req.body);
+
+    if(amount < 1){
+        throw new Error("Amount is less than ₹1 not allowed!");
+    }
+
+    let transactionNumber = await model.hmspaymenttransaction.max('transactionNumber');
+    let sequenceNumber = 1;
+
+    if (!transactionNumber){
+        throw new Error("Error generating transaction Number.");
+    }
+
+    transactionNumber += 1;
+    let transactionAmount = amount * 100;
+
+    // AllowedPaymentMode
+    // 0-Allow all modes 
+    // enabled on the Plutus 
+    // terminal.
+    // 1-Card
+    // 2-Cash
+    // 3-Points
+    // 4- Wallets
+    // 6- Brand EMI
+    // 7-Sodexo
+    // 8-PhonePe
+    // 9-UPI PayTm
+    // 10- UPI Sale
+    // 11-UPI Bharat QR
+
+    let paymentObject = {
+        TransactionNumber: transactionNumber,
+        SequenceNumber: sequenceNumber,
+        AllowedPaymentMode: "1",
+        UserID: "Durga",
+        Amount: transactionAmount,
+        MerchantID,
+        SecurityToken,
+        IMEI,
+        AutoCancelDurationInMinutes,
+        MerchantStorePosCode,
+    }
+    
+    let initiatePaymentResponse = await plutusPaymentInstance.post('/API/CloudBasedIntegration/V1/UploadBilledTransaction', paymentObject)
+    
+    initiatePaymentResponse = initiatePaymentResponse.data;
+
+    // LOGGING TRANSACTION
+    await logPlutusPaymentTransactions({
+        url: "/API/CloudBasedIntegration/V1/UploadBilledTransaction",
+        type: "CREATE",
+        TransactionNumber: transactionNumber,
+        MerchantStorePosCode,
+        request: paymentObject, 
+        response: initiatePaymentResponse
+    });
+
+    const { PlutusTransactionReferenceID } = initiatePaymentResponse;
+
+    if(!(initiatePaymentResponse.ResponseCode === 0 && initiatePaymentResponse.ResponseMessage === "APPROVED")){
+        throw new Error(`Payment Initiation Failed! - ${initiatePaymentResponse?.ResponseMessage}`)
+    }
+
+    const transactionRecord = await model.hmspaymenttransaction.create({
+        transactionNumber,
+        amount,
+        userId,
+        merchantStorePosCode: MerchantStorePosCode,
+        plutusTransactionReferenceID: PlutusTransactionReferenceID,
+        paymentMobileNumber,
+        status: initiatePaymentResponse?.ResponseMessage,
+        sequenceNumber
+    });
+
+    res.status(200).json({
+        error: false,
+        message: "APPROVED",
+        result: {
+            transactionReferenceID: PlutusTransactionReferenceID
+        }
+    });
+
+  }
+  catch(error){
+    await sendErrorMessageAndLogIt(['create', 'failed', 'initiate payment.'], error, __filename, res, req)
+  }
+}
+
+exports.statusOfPayment = async( req, res, next) => {
+  try{
+    const { transactionReferenceID } = await statusOfPaymentSchema.validateAsync(req.body);
+    // CHECKING transactionReferenceID IN TABLE
+
+    const transactionRecord = await getTransactionRecord(transactionReferenceID);
+
+    if (!transactionRecord){
+        throw new Error("transactionReferenceID not present.");
+    }
+
+    let paymentStatus = {
+        MerchantID,
+        SecurityToken,
+        IMEI,
+        MerchantStorePosCode,
+        PlutusTransactionReferenceID: transactionReferenceID
+    }
+
+    let paymentStatusResponse = await plutusPaymentInstance.post('/API/CloudBasedIntegration/V1/GetCloudBasedTxnStatus', paymentStatus)
+
+    paymentStatusResponse = paymentStatusResponse?.data;
+
+    // LOGGING
+    await logPlutusPaymentTransactions({
+        url: "/API/CloudBasedIntegration/V1/GetCloudBasedTxnStatus",
+        type: "STATUS",
+        PlutusTransactionReferenceID: transactionReferenceID,
+        MerchantStorePosCode,
+        request: paymentStatus, 
+        response: paymentStatusResponse
+    });
+
+    const updateStatusTransaction = await model.hmspaymenttransaction.update({
+        status: paymentStatusResponse?.ResponseMessage,
+        txtStatusResponse: paymentStatusResponse,
+        transactionData: paymentStatusResponse?.TransactionData
+    },{
+        where: {
+            plutusTransactionReferenceID: transactionReferenceID,
+        }
+    });
+
+    if(paymentStatusResponse.ResponseCode === 1){
+        throw new Error(paymentStatusResponse.ResponseMessage)
+    }
+
+    res.send({
+        error: false,
+        message: paymentStatusResponse.ResponseMessage,
+        result: {
+            TransactionData: paymentStatusResponse?.TransactionData
+        }
+    });
+  }
+  catch(error){
+    await sendErrorMessageAndLogIt(['find', 'failed', 'check payment status.'], error, __filename, res, req)
+  }
+}
+
+exports.cancelPayment = async( req, res, next) => {
+    try{
+
+        const { transactionReferenceID } = await cancelPaymentSchema.validateAsync(req.body);
+        
+        const transactionRecord = await getTransactionRecord(transactionReferenceID);
+
+        if (!(transactionRecord)){
+            throw new Error("transactionReferenceID not present.");
+        }
+    
+        let cancelPaymentRequestObj = {
+            MerchantID,
+            SecurityToken,
+            IMEI,
+            MerchantStorePosCode,
+            PlutusTransactionReferenceID: transactionReferenceID,
+            Amount: transactionRecord.amount * 100,
+        }
+
+        let cancelPaymentResponse = await plutusPaymentInstance.post('/API/CloudBasedIntegration/V1/CancelTransaction', cancelPaymentRequestObj);
+        
+        cancelPaymentResponse = cancelPaymentResponse?.data;
+
+        // LOGGING
+        await logPlutusPaymentTransactions({
+            url: "/API/CloudBasedIntegration/V1/CancelTransaction",
+            type: "CANCEL",
+            PlutusTransactionReferenceID: transactionReferenceID,
+            MerchantStorePosCode,
+            request: cancelPaymentRequestObj, 
+            response: cancelPaymentResponse
+        });
+
+        const updateCancelTransaction = await model.hmspaymenttransaction.update({
+            cancelTxtResponse: cancelPaymentResponse
+        },{
+            where: {
+                plutusTransactionReferenceID: transactionReferenceID,
+            }
+        });
+    
+        if(cancelPaymentResponse.ResponseCode === 1){
+            throw new Error(cancelPaymentResponse.ResponseMessage);
+        }
+
+        res.send({
+            error: false,
+            message: cancelPaymentResponse.ResponseMessage
+        });
+    }
+    catch(error){
+        console.log(error)
+        await sendErrorMessageAndLogIt(['create', 'failed', 'cancel payment.'], error, __filename, res, req)
+    }
+}
+
+async function getTransactionRecord(transactionReferenceID) {
+    return await model.hmspaymenttransaction.findOne({
+        where: { plutusTransactionReferenceID: transactionReferenceID },
+    });
+}
+
+exports.voidPayment = async(req, res, next) => {
+    try{
+        const { transactionReferenceID } = await voidPaymentSchema.validateAsync(req.body);
+        
+        const transactionRecord = await getTransactionRecord(transactionReferenceID);
+
+        if (!transactionRecord){
+            throw new Error("transactionReferenceID not present.");
+        }
+
+        let voidPaymentRequestObj = {
+            TransactionNumber: transactionRecord.transactionNumber,
+            SequenceNumber: 1,
+            AllowedPaymentMode: 1,
+            Amount: transactionRecord.amount * 100,
+            MerchantID,
+            SecurityToken,
+            IMEI,
+            TxnType: 1,
+            OriginalPlutusTransactionReferenceID: transactionReferenceID,
+        }
+
+
+        let voidPaymentResponse = await plutusPaymentInstance.post('/API/CloudBasedIntegration/V1/UploadBilledTransaction', voidPaymentRequestObj)
+        
+        voidPaymentResponse = voidPaymentResponse?.data;
+
+        await logPlutusPaymentTransactions({
+            url: "/API/CloudBasedIntegration/V1/UploadBilledTransaction",
+            type: "VOID",
+            PlutusTransactionReferenceID: transactionReferenceID,
+            MerchantStorePosCode,
+            request: voidPaymentRequestObj , 
+            response: voidPaymentResponse
+        });
+
+        // const updateCancelTransaction = await model.hmspaymenttransaction.update({
+        //     cancelTxtResponse: cancelPaymentResponse
+        // },{
+        //     where: {
+        //         plutusTransactionReferenceID: transactionReferenceID,
+        //     }
+        // });
+    
+        if(voidPaymentResponse.ResponseCode === 1){
+            throw new Error(voidPaymentResponse.ResponseMessage);
+        }
+
+        res.send({
+            error: false,
+            message: voidPaymentResponse.ResponseMessage
+        });
+        
+    }
+    catch(error){
+        await sendErrorMessageAndLogIt(['create', 'failed', 'void payment.'], error, __filename, res, req)
+    }
+
+}
+
+async function logPlutusPaymentTransactions(
+    {
+        url,
+        type,
+        TransactionNumber,
+        PlutusTransactionReferenceID,
+        MerchantStorePosCode,
+        request, 
+        response
+    })
+    {
+
+        request = maskPaymentRequest(request);
+        const log = await model.hmsplutuspaymenttransactionlog.create({
+            url,
+            type,
+            TransactionNumber,
+            PlutusTransactionReferenceID,
+            MerchantStorePosCode,
+            request, 
+            response
+        });
+        return;
+}
+
+
+function maskPaymentRequest(requestObject){
+
+    const maskedReqObj = JSON.parse(JSON.stringify(requestObject));
+    maskedReqObj.SecurityToken = maskedReqObj.SecurityToken.slice(0,5) + maskedReqObj.SecurityToken.slice(5, maskedReqObj.SecurityToken.length).replace(/[a-z\d]/gi,"#");
+    return maskedReqObj;
+}
